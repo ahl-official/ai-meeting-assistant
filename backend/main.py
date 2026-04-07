@@ -40,6 +40,11 @@ if not os.path.exists(TEMP_AUDIO_DIR):
     os.makedirs(TEMP_AUDIO_DIR)
 
 
+@app.get("/")
+def read_root():
+    return {"status": "AI Meeting Assistant API is active"}
+
+
 def update_meeting_in_sheets(meeting_id: str, updates: dict):
     """Helper to send updates to Google Sheets via Apps Script"""
     if not APPS_SCRIPT_URL:
