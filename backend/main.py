@@ -10,7 +10,8 @@ import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 import imageio_ffmpeg
 import assemblyai as aai
@@ -18,8 +19,8 @@ import assemblyai as aai
 # Load environment variables
 load_dotenv()
 
-# Configure the Gemini API client
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Configure the NEW Gemini API client (google-genai SDK)
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
 APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
@@ -62,9 +63,59 @@ def update_meeting_in_sheets(meeting_id: str, updates: dict):
         print(f"Error updating Google Sheets: {e}")
 
 
+def call_gemini_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) -> str:
+    """
+    Calls Gemini API with a robust fallback chain.
+    Uses the new google-genai SDK (v1 API - stable model names).
+    """
+    # Verified correct model names from Google AI docs (April 2026)
+    GEMINI_MODELS = [
+        "gemini-2.5-flash",       # Primary: latest stable
+        "gemini-2.5-flash-lite",  # Backup: fastest & cheapest
+        "gemini-flash-latest",    # Backup: always latest flash alias
+        "gemini-2.0-flash",       # Backup: previous gen (deprecated but functional)
+    ]
+
+    config_params = {}
+    if json_mode:
+        config_params["response_mime_type"] = "application/json"
+
+    last_error = None
+    for model_name in GEMINI_MODELS:
+        tries = 0
+        while tries < 2:  # Retry up to 2 times per model for quota errors
+            try:
+                print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries + 1})")
+                response = gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_params)
+                )
+                raw_text = response.text.strip()
+                print(f"[{doc_id}] Success with model: {model_name}")
+                return raw_text
+            except Exception as model_err:
+                last_error = str(model_err)
+                if "429" in last_error:
+                    # Quota exceeded - wait and retry same model
+                    print(f"[{doc_id}] Quota hit for {model_name}. Waiting 20s to retry...")
+                    time.sleep(20)
+                    tries += 1
+                    continue
+                elif "400" in last_error or "404" in last_error or "location" in last_error.lower():
+                    # Location/availability issue - skip to next model immediately
+                    print(f"[{doc_id}] Model {model_name} unavailable (location/404). Skipping...")
+                    break
+                else:
+                    print(f"[{doc_id}] Model {model_name} failed: {model_err}")
+                    break  # Try next model
+    
+    raise Exception(f"All Gemini models failed. Last error: {last_error}")
+
+
 def process_audio_background(file_path: str, filename_without_ext: str, doc_id: str):
     """
-    Background worker that transcibes audio and updates Google Sheets.
+    Background worker that transcribes audio and updates Google Sheets.
     """
     compressed_path = ""
     
@@ -88,7 +139,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
             "progress": 10,
             "status": "processing"
         })
-        print(f"[{doc_id}] Compressing massive audio file...")
+        print(f"[{doc_id}] Compressing audio file...")
         
         process = subprocess.run(compress_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if process.returncode != 0:
@@ -132,16 +183,6 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         })
         print(f"[{doc_id}] Building Master Summary & To-Do List using Gemini...")
         
-        # Try models in order - if one fails (quota, unavailable), try the next
-        GEMINI_MODELS = [
-            "gemini-2.5-flash", 
-            "gemini-2.0-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro-latest",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-        ]
-        
         reduce_prompt = (
             "You are a meeting assistant. Based on the following complete meeting transcript (with speaker labels), "
             "return a JSON object with strictly these keys:\n"
@@ -150,37 +191,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
             f"TRANSCRIPT:\n{master_transcript}"
         )
         
-        raw_text = None
-        last_error = None
-        
-        # Try models with retry logic for 429 errors
-        for model_name in GEMINI_MODELS:
-            tries = 0
-            while tries < 2:  # Try each model twice if quota hit
-                try:
-                    print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries+1})")
-                    model = genai.GenerativeModel(model_name)
-                    final_response = model.generate_content(
-                        reduce_prompt,
-                        generation_config={"response_mime_type": "application/json"}
-                    )
-                    raw_text = final_response.text.strip()
-                    print(f"[{doc_id}] Success with model: {model_name}")
-                    break  # Success!
-                except Exception as model_err:
-                    last_error = str(model_err)
-                    if "429" in last_error:
-                        print(f"[{doc_id}] Quota hit for {model_name}. Waiting 15 seconds to retry...")
-                        time.sleep(15)
-                        tries += 1
-                        continue
-                    else:
-                        print(f"[{doc_id}] Model {model_name} failed: {model_err}")
-                        break # Try next model
-            if raw_text: break # Found a working model
-        
-        if raw_text is None:
-            raise Exception(f"All Gemini models failed. Last error: {last_error}")
+        raw_text = call_gemini_with_fallback(doc_id, reduce_prompt, json_mode=True)
         
         # Robust JSON cleaning (handles extra text or markdown wrappers)
         cleaned_text = raw_text.strip()
@@ -192,7 +203,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         try:
             result_json = json.loads(cleaned_text, strict=False)
         except Exception as json_err:
-            print(f"[{doc_id}] JSON Parse Error. Raw response from Gemini: {raw_text}")
+            print(f"[{doc_id}] JSON Parse Error. Raw response: {raw_text}")
             raise json_err
         
         # Step 4: Save to Google Sheets
@@ -270,33 +281,13 @@ async def translate_transcript(payload: TranscriptPayload):
     Translates any given SRT transcript into pure English maintaining the SRT formatting exactly.
     """
     try:
-        GEMINI_MODELS = [
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-pro-latest",
-            "gemini-1.5-flash-latest",
-        ]
         prompt = (
             "You are a professional translator. I will provide you with an SRT (SubRip) subtitle format transcript. "
             "Your job is to translate absolutely everything spoken into plain English, while strictly retaining all the formatting, line breaks, timestamps, index numbers, and speaker labels ([Speaker A] etc.).\n"
             "Do not add any additional markdown or context. Just output the translated SRT script safely.\n\n"
             f"TRANSCRIPT TO TRANSLATE:\n{payload.transcript}"
         )
-        translated = None
-        last_err = None
-        for model_name in GEMINI_MODELS:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                translated = response.text.strip()
-                break
-            except Exception as me:
-                last_err = me
-                continue
-        
-        if translated is None:
-            raise Exception(f"All Gemini models failed: {last_err}")
+        translated = call_gemini_with_fallback("translate", prompt, json_mode=False)
         
         # Clean any markdown code blocks
         if translated.startswith("```"):

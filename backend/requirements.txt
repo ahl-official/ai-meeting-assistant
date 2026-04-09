@@ -2,7 +2,7 @@ fastapi
 uvicorn
 python-multipart==0.0.9
 requests==2.31.0
-google-generativeai
+google-genai
 python-dotenv
 imageio-ffmpeg
 assemblyai
