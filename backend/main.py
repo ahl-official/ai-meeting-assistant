@@ -177,7 +177,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         transcriber = aai.Transcriber()
         config = aai.TranscriptionConfig(
             speaker_labels=True,
-            speech_model=aai.SpeechModel.nano
+            speech_models=["universal-3-pro", "universal-2"]
         )
         
         transcript_obj = transcriber.transcribe(compressed_path, config=config)
