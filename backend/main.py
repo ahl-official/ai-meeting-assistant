@@ -11,8 +11,6 @@ import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 import imageio_ffmpeg
 import assemblyai as aai
@@ -20,8 +18,7 @@ import assemblyai as aai
 # Load environment variables
 load_dotenv()
 
-# Configure the NEW Gemini API client (google-genai SDK)
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# AI Service Clients
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
