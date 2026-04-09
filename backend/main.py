@@ -36,7 +36,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-TEMP_AUDIO_DIR = "temp_audio"
+# absolute path for temp audio to ensure FFmpeg find it regardless of CWD
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_AUDIO_DIR = os.path.join(BASE_DIR, "temp_audio")
+
 if not os.path.exists(TEMP_AUDIO_DIR):
     os.makedirs(TEMP_AUDIO_DIR)
 
@@ -69,11 +72,12 @@ def call_gemini_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) 
     Uses the new google-genai SDK (v1 API - stable model names).
     """
     # Verified correct model names from Google AI docs (April 2026)
+    # Verified ONLINE models from your specific project test
     GEMINI_MODELS = [
-        "gemini-2.5-flash",       # Primary: latest stable
-        "gemini-2.5-flash-lite",  # Backup: fastest & cheapest
-        "gemini-flash-latest",    # Backup: always latest flash alias
-        "gemini-2.0-flash",       # Backup: previous gen (deprecated but functional)
+        "gemini-2.5-flash",       # Verified working
+        "gemini-flash-latest",    # Verified working
+        "gemini-1.5-flash",       # Stable backup
+        "gemini-2.0-flash",       # Fallback
     ]
 
     config_params = {}
@@ -257,12 +261,17 @@ async def upload_audio(background_tasks: BackgroundTasks, file: UploadFile = Fil
     except Exception as e:
          raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
-    # 2. Save file locally
-    file_path = os.path.join(TEMP_AUDIO_DIR, file.filename)
+    # 2. Save file locally with UNIQUE ID to prevent collisions and path issues
+    # Using doc_id in filename ensures FFmpeg finds the exact right file
+    unique_filename = f"{doc_id}_{file.filename}"
+    file_path = os.path.join(TEMP_AUDIO_DIR, unique_filename)
+    
+    print(f"[{doc_id}] Saving upload to absolute path: {file_path}")
+    
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    filename_without_ext, _ = os.path.splitext(file.filename)
+    filename_without_ext = f"{doc_id}_{os.path.splitext(file.filename)[0]}"
     
     # 3. Spawn background task
     background_tasks.add_task(process_audio_background, file_path, filename_without_ext, doc_id)
