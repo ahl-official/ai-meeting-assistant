@@ -45,8 +45,8 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return cached || fetch(event.request).then((response) => {
-        // Cache new static assets on the fly
-        if (response.ok && event.request.method === 'GET') {
+        // Cache new static assets on the fly (Only for http/https)
+        if (response.ok && event.request.method === 'GET' && url.protocol.startsWith('http')) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }

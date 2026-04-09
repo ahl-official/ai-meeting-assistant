@@ -136,6 +136,8 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         GEMINI_MODELS = [
             "gemini-2.5-flash", 
             "gemini-2.0-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
             "gemini-1.5-flash",
             "gemini-1.5-pro",
         ]
@@ -168,8 +170,8 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
                 except Exception as model_err:
                     last_error = str(model_err)
                     if "429" in last_error:
-                        print(f"[{doc_id}] Quota hit for {model_name}. Waiting 10 seconds to retry...")
-                        time.sleep(10)
+                        print(f"[{doc_id}] Quota hit for {model_name}. Waiting 15 seconds to retry...")
+                        time.sleep(15)
                         tries += 1
                         continue
                     else:
