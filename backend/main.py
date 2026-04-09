@@ -169,7 +169,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         update_meeting_in_sheets(doc_id, {
             "progress": 40
         })
-        print(f"[{doc_id}] High-speed Transcribing with AssemblyAI Nano...")
+        print(f"[{doc_id}] High-speed Transcribing with AssemblyAI Universal Models...")
         
         transcriber = aai.Transcriber()
         config = aai.TranscriptionConfig(
