@@ -4,6 +4,7 @@ import json
 import time
 import subprocess
 import glob
+import tempfile
 from datetime import datetime, timezone
 import requests
 
@@ -36,9 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# absolute path for temp audio to ensure FFmpeg find it regardless of CWD
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMP_AUDIO_DIR = os.path.join(BASE_DIR, "temp_audio")
+# Use system temp directory for high-speed, restricted-access cloud stability
+TEMP_AUDIO_DIR = os.path.join(tempfile.gettempdir(), "ai_meeting_assistant")
 
 if not os.path.exists(TEMP_AUDIO_DIR):
     os.makedirs(TEMP_AUDIO_DIR)
@@ -87,9 +87,10 @@ def call_gemini_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) 
     last_error = None
     for model_name in GEMINI_MODELS:
         tries = 0
-        while tries < 2:  # Retry up to 2 times per model for quota errors
+        max_tries = 3
+        while tries < max_tries:
             try:
-                print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries + 1})")
+                print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries + 1}/{max_tries})")
                 response = gemini_client.models.generate_content(
                     model=model_name,
                     contents=prompt,
@@ -100,15 +101,16 @@ def call_gemini_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) 
                 return raw_text
             except Exception as model_err:
                 last_error = str(model_err)
-                if "429" in last_error:
-                    # Quota exceeded - wait and retry same model
-                    print(f"[{doc_id}] Quota hit for {model_name}. Waiting 20s to retry...")
-                    time.sleep(20)
+                if "429" in last_error or "503" in last_error:
+                    # Quota/Service busy - wait with exponential backoff
+                    wait_time = (tries + 1) * 15 
+                    print(f"[{doc_id}] {model_name} busy (429/503). Waiting {wait_time}s to retry...")
+                    time.sleep(wait_time)
                     tries += 1
                     continue
                 elif "400" in last_error or "404" in last_error or "location" in last_error.lower():
-                    # Location/availability issue - skip to next model immediately
-                    print(f"[{doc_id}] Model {model_name} unavailable (location/404). Skipping...")
+                    # Critical model failure - skip to next model
+                    print(f"[{doc_id}] Model {model_name} unavailable (location/404/400). Skipping...")
                     break
                 else:
                     print(f"[{doc_id}] Model {model_name} failed: {model_err}")
