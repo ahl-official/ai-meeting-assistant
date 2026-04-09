@@ -21,7 +21,7 @@ load_dotenv()
 # AI Service Clients
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
 
 # Initialize the FastAPI application
