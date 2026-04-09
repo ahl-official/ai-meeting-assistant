@@ -24,6 +24,7 @@ load_dotenv()
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
 
 # Initialize the FastAPI application
@@ -66,57 +67,72 @@ def update_meeting_in_sheets(meeting_id: str, updates: dict):
         print(f"Error updating Google Sheets: {e}")
 
 
-def call_gemini_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) -> str:
+def call_llm_with_fallback(doc_id: str, prompt: str, json_mode: bool = True) -> str:
     """
-    Calls Gemini API with a robust fallback chain.
-    Uses the new google-genai SDK (v1 API - stable model names).
+    Calls LLM via OpenRouter with a robust fallback chain.
     """
-    # Verified correct model names from Google AI docs (April 2026)
-    # Verified ONLINE models from your specific project test
-    GEMINI_MODELS = [
-        "gemini-2.5-flash",       # Verified working
-        "gemini-flash-latest",    # Verified working
-        "gemini-1.5-flash",       # Stable backup
-        "gemini-2.0-flash",       # Fallback
+    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
+        raise Exception("OpenRouter API Key is missing or invalid.")
+
+    # Optimized OpenRouter models (Cheapest & Fastest first)
+    LLM_MODELS = [
+        "google/gemini-2.0-flash-001",   # Primary: ultra-fast, ultra-cheap
+        "google/gemini-flash-1.5",       # Backup: stable reliable
+        "anthropic/claude-3-haiku",      # Backup: different provider fallback
+        "google/gemini-2.0-pro-exp-02-05:free"
     ]
 
-    config_params = {}
-    if json_mode:
-        config_params["response_mime_type"] = "application/json"
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ai-meeting-assistant.vercel.app", # Recommended by OpenRouter
+        "X-OpenRouter-Title": "AI Meeting Assistant"
+    }
 
     last_error = None
-    for model_name in GEMINI_MODELS:
+    for model_name in LLM_MODELS:
         tries = 0
         max_tries = 3
         while tries < max_tries:
             try:
-                print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries + 1}/{max_tries})")
-                response = gemini_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_params)
-                )
-                raw_text = response.text.strip()
-                print(f"[{doc_id}] Success with model: {model_name}")
-                return raw_text
-            except Exception as model_err:
-                last_error = str(model_err)
-                if "429" in last_error or "503" in last_error:
-                    # Quota/Service busy - wait with exponential backoff
-                    wait_time = (tries + 1) * 15 
-                    print(f"[{doc_id}] {model_name} busy (429/503). Waiting {wait_time}s to retry...")
+                print(f"[{doc_id}] Trying OpenRouter model: {model_name} (Attempt {tries + 1}/{max_tries})")
+                
+                payload = {
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+                
+                if json_mode:
+                    payload["response_format"] = {"type": "json_object"}
+                
+                response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    raw_text = data['choices'][0]['message']['content'].strip()
+                    print(f"[{doc_id}] Success with OpenRouter model: {model_name}")
+                    return raw_text
+                
+                # Handle specific API errors
+                error_data = response.text
+                if response.status_code in [429, 503, 502, 504]:
+                    wait_time = (tries + 1) * 15
+                    print(f"[{doc_id}] OpenRouter busy ({response.status_code}). Waiting {wait_time}s...")
                     time.sleep(wait_time)
                     tries += 1
                     continue
-                elif "400" in last_error or "404" in last_error or "location" in last_error.lower():
-                    # Critical model failure - skip to next model
-                    print(f"[{doc_id}] Model {model_name} unavailable (location/404/400). Skipping...")
-                    break
                 else:
-                    print(f"[{doc_id}] Model {model_name} failed: {model_err}")
-                    break  # Try next model
+                    print(f"[{doc_id}] OpenRouter error {response.status_code}: {error_data}")
+                    break # Try next model
+                    
+            except Exception as e:
+                last_error = str(e)
+                print(f"[{doc_id}] Request failed: {e}")
+                tries += 1
+                time.sleep(5)
     
-    raise Exception(f"All Gemini models failed. Last error: {last_error}")
+    raise Exception(f"All AI models failed. Last error: {last_error}")
 
 
 def process_audio_background(file_path: str, filename_without_ext: str, doc_id: str):
@@ -152,15 +168,17 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
             raise Exception(f"FFmpeg compression failed: {process.stderr}")
             
         
-        # Step 2: Upload and Transcribe with AssemblyAI
+        # Step 2: Upload and Transcribe with AssemblyAI NANO (Faster/Cheaper)
         update_meeting_in_sheets(doc_id, {
             "progress": 40
         })
-        print(f"[{doc_id}] Uploading and Transcribing with AssemblyAI...")
+        print(f"[{doc_id}] High-speed Transcribing with AssemblyAI Nano...")
         
         transcriber = aai.Transcriber()
-        config = aai.TranscriptionConfig(speaker_labels=True)
-        config.speech_models = ["universal-2"]
+        config = aai.TranscriptionConfig(
+            speaker_labels=True,
+            speech_model=aai.SpeechModel.nano
+        )
         
         transcript_obj = transcriber.transcribe(compressed_path, config=config)
         
@@ -197,7 +215,7 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
             f"TRANSCRIPT:\n{master_transcript}"
         )
         
-        raw_text = call_gemini_with_fallback(doc_id, reduce_prompt, json_mode=True)
+        raw_text = call_llm_with_fallback(doc_id, reduce_prompt, json_mode=True)
         
         # Robust JSON cleaning (handles extra text or markdown wrappers)
         cleaned_text = raw_text.strip()
@@ -298,7 +316,7 @@ async def translate_transcript(payload: TranscriptPayload):
             "Do not add any additional markdown or context. Just output the translated SRT script safely.\n\n"
             f"TRANSCRIPT TO TRANSLATE:\n{payload.transcript}"
         )
-        translated = call_gemini_with_fallback("translate", prompt, json_mode=False)
+        translated = call_llm_with_fallback("translate", prompt, json_mode=False)
         
         # Clean any markdown code blocks
         if translated.startswith("```"):
