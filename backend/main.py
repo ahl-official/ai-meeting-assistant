@@ -134,11 +134,10 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         
         # Try models in order - if one fails (quota, unavailable), try the next
         GEMINI_MODELS = [
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-pro-latest",
-            "gemini-1.5-flash-latest",
+            "gemini-2.5-flash", 
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
         ]
         
         reduce_prompt = (
@@ -151,31 +150,48 @@ def process_audio_background(file_path: str, filename_without_ext: str, doc_id: 
         
         raw_text = None
         last_error = None
+        
+        # Try models with retry logic for 429 errors
         for model_name in GEMINI_MODELS:
-            try:
-                print(f"[{doc_id}] Trying Gemini model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                final_response = model.generate_content(
-                    reduce_prompt,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                raw_text = final_response.text.strip()
-                print(f"[{doc_id}] Success with model: {model_name}")
-                break  # If successful, stop trying
-            except Exception as model_err:
-                last_error = model_err
-                print(f"[{doc_id}] Model {model_name} failed: {model_err}. Trying next...")
-                continue
+            tries = 0
+            while tries < 2:  # Try each model twice if quota hit
+                try:
+                    print(f"[{doc_id}] Trying Gemini model: {model_name} (Attempt {tries+1})")
+                    model = genai.GenerativeModel(model_name)
+                    final_response = model.generate_content(
+                        reduce_prompt,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    raw_text = final_response.text.strip()
+                    print(f"[{doc_id}] Success with model: {model_name}")
+                    break  # Success!
+                except Exception as model_err:
+                    last_error = str(model_err)
+                    if "429" in last_error:
+                        print(f"[{doc_id}] Quota hit for {model_name}. Waiting 10 seconds to retry...")
+                        time.sleep(10)
+                        tries += 1
+                        continue
+                    else:
+                        print(f"[{doc_id}] Model {model_name} failed: {model_err}")
+                        break # Try next model
+            if raw_text: break # Found a working model
         
         if raw_text is None:
             raise Exception(f"All Gemini models failed. Last error: {last_error}")
         
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:]
-        if raw_text.endswith("```"):
-            raw_text = raw_text[:-3]
+        # Robust JSON cleaning (handles extra text or markdown wrappers)
+        cleaned_text = raw_text.strip()
+        if "```json" in cleaned_text:
+            cleaned_text = cleaned_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned_text:
+            cleaned_text = cleaned_text.split("```")[1].split("```")[0].strip()
             
-        result_json = json.loads(raw_text.strip(), strict=False)
+        try:
+            result_json = json.loads(cleaned_text, strict=False)
+        except Exception as json_err:
+            print(f"[{doc_id}] JSON Parse Error. Raw response from Gemini: {raw_text}")
+            raise json_err
         
         # Step 4: Save to Google Sheets
         print(f"[{doc_id}] Background processing COMPLETE.")
